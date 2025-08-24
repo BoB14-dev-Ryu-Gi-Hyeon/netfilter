@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -6,7 +8,15 @@
 #include <linux/netfilter.h>		/* for NF_ACCEPT */
 #include <errno.h>
 
+#include <string.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+
 #include <libnetfilter_queue/libnetfilter_queue.h>
+
+const char* blacklist[] = {
+	"gilgil.net"
+};
 
 void dump(unsigned char* buf, int size) {
 	int i;
@@ -74,16 +84,67 @@ static u_int32_t print_pkt (struct nfq_data *tb)
 	return id;
 }
 
-int find_host() {
-	nfq_get_payload
-	
-}
-
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 	      struct nfq_data *nfa, void *data)
 {
 	u_int32_t id = print_pkt(nfa);
 	printf("entering callback\n");
+
+	unsigned char *pkt_data;
+
+	// 페이로드가 없으면 허용
+	int payload_len = nfq_get_payload(nfa, &pkt_data);
+	if (payload_len < 0) {
+		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+	}
+
+	// IP 프로토콜이 아니라면 HTTP가 아님 - 허용
+	struct iphdr *ip_h = (struct iphdr *)pkt_data;
+	if (ip_h->protocol != IPPROTO_TCP) {
+		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+	}
+
+	// TCP 헤더 길이 계산
+	unsigned int ip_header_len = ip_h->ihl * 4;
+	struct tcphdr *tcp_h = (struct tcphdr *)(pkt_data + ip_header_len);
+	
+	unsigned int tcp_header_len = tcp_h->doff * 4;
+	char *http_payload = (char *)(pkt_data + ip_header_len + tcp_header_len);
+	int http_payload_len = payload_len - (ip_header_len + tcp_header_len);
+
+	if (http_payload_len <= 0) {
+		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+	}
+
+	// 일치하는 문자여 찾기! - AI 사용했습니다.
+	char *host_start = strstr(http_payload, "Host: ");
+	if (host_start == NULL) {
+		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+	}
+	// "Host: " 문자열 다음부터 시작
+	host_start += 6;
+
+	char *host_end = strstr(host_start, "\r\n");
+	if (host_end == NULL) {
+		return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+	}
+
+	int host_len = host_end - host_start;
+	char extracted_host[256];
+	if (host_len > 0 && host_len < sizeof(extracted_host)) {
+		strncpy(extracted_host, host_start, host_len);
+		extracted_host[host_len] = '\0';
+
+		// 블랙리스트 비교!
+		int blacklist_size = sizeof(blacklist) / sizeof(blacklist[0]);
+		for (int i = 0; i < blacklist_size; i++) {
+			if (strcmp(extracted_host, blacklist[i]) == 0) {
+				printf("거부된 요청! HOST :{%s}\n", extracted_host);
+				return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+			}
+		}
+		printf("허용된 요청! HOST : {%s}\n", extracted_host);
+	}
 	return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 }
 
