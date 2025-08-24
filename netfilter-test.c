@@ -14,10 +14,6 @@
 
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
-const char* blacklist[] = {
-	"gilgil.net"
-};
-
 void dump(unsigned char* buf, int size) {
 	int i;
 	for (i = 0; i < size; i++) {
@@ -87,6 +83,9 @@ static u_int32_t print_pkt (struct nfq_data *tb)
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 	      struct nfq_data *nfa, void *data)
 {
+	// deny_domain 을 cb 의 마지막 인자로 주려했지만 오류가 나서 해결이 안 되어
+	// GPT 사용해서 해결했습니다.
+	char *deny_domain = (char *)data;
 	u_int32_t id = print_pkt(nfa);
 	printf("entering callback\n");
 
@@ -135,13 +134,10 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 		strncpy(extracted_host, host_start, host_len);
 		extracted_host[host_len] = '\0';
 
-		// 블랙리스트 비교!
-		int blacklist_size = sizeof(blacklist) / sizeof(blacklist[0]);
-		for (int i = 0; i < blacklist_size; i++) {
-			if (strcmp(extracted_host, blacklist[i]) == 0) {
-				printf("거부된 요청! HOST :{%s}\n", extracted_host);
-				return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
-			}
+		// 도메인과 문자열 비교
+		if (strcmp(extracted_host, deny_domain) == 0) {
+			printf("거부된 요청! HOST :{%s}\n", extracted_host);
+			return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
 		}
 		printf("허용된 요청! HOST : {%s}\n", extracted_host);
 	}
@@ -150,6 +146,12 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 
 int main(int argc, char **argv)
 {
+	if (argc != 2) {
+		printf("입력 샘플 : netfilter-test test.gilgil.net");
+		exit(1);
+	}
+	char *deny_domain = argv[1];
+
 	struct nfq_handle *h;
 	struct nfq_q_handle *qh;
 	struct nfnl_handle *nh;
@@ -177,7 +179,7 @@ int main(int argc, char **argv)
 	}
 
 	printf("binding this socket to queue '0'\n");
-	qh = nfq_create_queue(h,  0, &cb, NULL);
+	qh = nfq_create_queue(h,  0, &cb, deny_domain);
 	if (!qh) {
 		fprintf(stderr, "error during nfq_create_queue()\n");
 		exit(1);
